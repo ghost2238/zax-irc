@@ -21,11 +21,29 @@ type Channel struct {
 	Password string
 }
 
+type Url struct {
+	Url       string
+	Timestamp time.Time
+}
+
+type Message struct {
+	Msg       string
+	User      string
+	Channel   string
+	Timestamp time.Time
+}
+
+type Event struct {
+	Event     string
+	User      string
+	Data      string // e.g quit message
+	Timestamp time.Time
+}
+
 type User struct {
-	Nicknames []string
-	Clients   []string
-	//Messages  []Message
-	Urls []string
+	Messages []Message
+	Events   []Event
+	Urls     []Url
 }
 
 type Config struct {
@@ -37,6 +55,47 @@ type Config struct {
 	Channels   []Channel
 	Handlers   []string
 	News       []string
+}
+
+var msgdata []Message
+var eventdata []Event
+var urldata []Url
+var userdata map[string]*User
+var file_history *os.File
+
+func history_escape(text string) string {
+	return strings.Replace(text, ",", "\\,", -1)
+}
+
+func history_unescape(text string) string {
+	return strings.Replace(text, "\\,", ",", -1)
+}
+
+func history_event(user, event, data string) {
+	line := []string{"event", strconv.FormatInt(time.Now().Unix(), 10), user, history_escape(event), history_escape(data)}
+	file_history.WriteString(strings.Join(line, ",") + "\n")
+	file_history.Sync()
+	s_data := Event{event, user, data, time.Now()}
+	userdata[user].Events = append(userdata[user].Events, s_data)
+	eventdata = append(eventdata, s_data)
+}
+
+func history_url(user, url string) {
+	line := []string{"url", strconv.FormatInt(time.Now().Unix(), 10), user, history_escape(url)}
+	file_history.WriteString(strings.Join(line, ",") + "\n")
+	file_history.Sync()
+	s_url := Url{url, time.Now()}
+	userdata[user].Urls = append(userdata[user].Urls, s_url)
+	urldata = append(urldata, s_url)
+}
+
+func history_message(user, channel, msg string) {
+	line := []string{"msg", strconv.FormatInt(time.Now().Unix(), 10), user, channel, history_escape(msg)}
+	file_history.WriteString(strings.Join(line, ",") + "\n")
+	file_history.Sync()
+	s_msg := Message{msg, user, channel, time.Now()}
+	userdata[user].Messages = append(userdata[user].Messages, s_msg)
+	msgdata = append(msgdata, s_msg)
 }
 
 func steam_search_request(url string) (string, bool) {
@@ -159,6 +218,7 @@ func get_quit_msg() string {
 }
 
 func main() {
+	userdata = make(map[string]*User)
 	fmt.Println("Loading config...")
 
 	file, _ := os.Open("conf.json")
@@ -170,6 +230,14 @@ func main() {
 	}
 
 	fmt.Println("Config loaded.")
+
+	fmt.Println("Load history...")
+	file_history, err = os.OpenFile("history.log", os.O_CREATE, os.ModeAppend)
+	if err != nil {
+		fmt.Println("Unable to open history.log")
+		os.Exit(-1)
+	}
+	fmt.Println("History loaded.")
 
 	cfg := irc.NewConfig(config.Nickname)
 	cfg.SSL = false
@@ -197,15 +265,17 @@ func main() {
 	c.HandleFunc(irc.JOIN,
 		func(conn *irc.Conn, line *irc.Line) {
 			fmt.Println("[" + line.Target() + "] " + line.Nick + " (~" + line.Ident + "@" + line.Host + ") has joined.")
-
+			history_event(line.Nick, "join", "")
 			if line.Nick == config.Nickname {
 				return
 			}
+			time.Sleep(100 * time.Millisecond)
 		})
 
 	c.HandleFunc(irc.QUIT,
 		func(conn *irc.Conn, line *irc.Line) {
 			fmt.Println("[" + line.Target() + "] " + line.Nick + " (" + line.Ident + "@" + line.Host + ") has quit.")
+			history_event(line.Nick, "quit", line.Text())
 			time.Sleep(100 * time.Millisecond)
 		})
 
@@ -217,9 +287,22 @@ func main() {
 
 	c.HandleFunc(irc.PRIVMSG,
 		func(conn *irc.Conn, line *irc.Line) {
+			time.Sleep(100 * time.Millisecond)
+
 			sender := line.Nick
 			text := line.Text()
+			channel := line.Target()
 			fmt.Println("[" + line.Target() + "] " + sender + ": " + text)
+
+			_, ok := userdata[sender]
+			if !ok {
+				m := []Message{}
+				e := []Event{}
+				u := []Url{}
+				userdata[sender] = &User{m, e, u}
+			}
+
+			history_message(sender, line.Target(), text)
 
 			if len(config.ReportChan) > 0 {
 				c.Privmsg(config.ReportChan, "["+line.Target()+"] "+sender+": "+text)
@@ -230,9 +313,85 @@ func main() {
 					c.Quit(get_quit_msg())
 				}
 			}
+
 			cmd_rand := []string{".r", ".random"}
 			cmd_steam := []string{".s", ".steam"}
+			cmd_url := []string{".u", ".url"}
+			cmd_msg := []string{".m", ".msg"}
+			//cmd_seen := []string{".seen", ""}
 			args := strings.Split(text, " ")
+			user := ""
+
+			// Parse user for history commands
+			if is_command(text, cmd_url) || is_command(text, cmd_msg) {
+				re := regexp.MustCompile(fmt.Sprintf("%s %s.+(u=[[:alnum:]]+)", args[0], args[1]))
+				match := re.FindStringSubmatch(text)
+				if match != nil {
+					user = match[1]
+				}
+			}
+			if is_command(text, cmd_url) {
+				var url Url
+				var urls []Url
+				if user != "" {
+					urls = userdata[user].Urls
+				} else {
+					urls = urldata
+				}
+				if args[1] == "last" {
+					url = urls[len(urls)-1]
+				}
+				if args[1] == "find" {
+					expr := ""
+					for i := 2; i < len(args); i++ {
+						expr += expr + args[i]
+					}
+					re := regexp.MustCompile(expr)
+					for _, i_url := range urls {
+						match := re.FindStringSubmatch(i_url.Url)
+						if match != nil {
+							url = i_url
+						}
+					}
+				}
+				if url.Url == "" {
+					return
+				}
+				t := url.Timestamp
+				c.Privmsg(channel, fmt.Sprintf("[%d-%02d-%02d %02d:%02d:%02d] %v", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), url.Url))
+				return
+			}
+			if is_command(text, cmd_msg) {
+				var msg Message
+				var msgs []Message
+				if user != "" {
+					msgs = userdata[user].Messages
+				} else {
+					msgs = msgdata
+				}
+				if args[1] == "last" {
+					msg = msgs[len(msgs)-1]
+				}
+				if args[1] == "find" {
+					expr := ""
+					for i := 2; i < len(args); i++ {
+						expr += expr + args[i]
+					}
+					re := regexp.MustCompile(expr)
+					for _, i_msg := range msgs {
+						match := re.FindStringSubmatch(i_msg.Msg)
+						if match != nil {
+							msg = i_msg
+						}
+					}
+				}
+				if msg.Msg == "" {
+					return
+				}
+				t := msg.Timestamp
+				c.Privmsg(channel, fmt.Sprintf("[%d-%02d-%02d %02d:%02d:%02d] %v: %v", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), msg.User, msg.Msg))
+				return
+			}
 
 			if is_command(text, cmd_rand) {
 				if len(args) < 3 {
@@ -256,17 +415,15 @@ func main() {
 				if len(args) < 2 {
 					return
 				}
-				if args[1] == "latest" {
-					result, success := steam_search_request("http://store.steampowered.com/search/?sort_by=Released_DESC&tags=-1&category1=998&page=1")
-					if success {
-						c.Privmsg(line.Target(), result)
-						fmt.Println(result)
-					} else {
-						fmt.Println("Failed to retrieve steam search result.")
-					}
+				subcommand := args[1]
+				success := false
+				result := ""
+
+				if subcommand == "latest" || subcommand == "l" {
+					result, success = steam_search_request("http://store.steampowered.com/search/?sort_by=Released_DESC&tags=-1&category1=998&page=1")
 				}
-				if args[1] == "find" {
-					re := regexp.MustCompile("steam search ([[:alnum:] ]+)")
+				if subcommand == "find" || subcommand == "f" {
+					re := regexp.MustCompile(fmt.Sprintf("%s %s ([[:alnum:] ]+)", args[0], args[1]))
 					match := re.FindStringSubmatch(text)
 					if match == nil || len(match) == 0 {
 						fmt.Println("Doesn't match.")
@@ -274,22 +431,24 @@ func main() {
 					}
 					search_url := "http://store.steampowered.com/search/?snr=&term=" + match[1]
 					fmt.Println("Search URL: " + search_url)
-					result, success := steam_search_request(search_url)
-					if success {
-						c.Privmsg(line.Target(), result)
-					} else {
-						fmt.Println("Failed to retrieve steam search result.")
-					}
+					result, success = steam_search_request(search_url)
+				}
+				if success {
+					c.Privmsg(line.Target(), result)
+					fmt.Println(result)
+				} else {
+					fmt.Println("Failed to retrieve steam search result.")
 				}
 				return
 			}
-
 			// Handle URLs
 			if !(sender == "Wipe" && (strings.Contains(text, "Steam") || strings.Contains(text, "YouTube"))) {
 				urls := xurls.Relaxed.FindAllString(text, -1)
 				for i := 0; i < len(urls); i++ {
 					url := urls[i]
 					fmt.Println("Found url " + url)
+					history_url(sender, url)
+
 					if url == last_url {
 						fmt.Println("Matches same url as last time, ignore.")
 						continue
@@ -303,7 +462,6 @@ func main() {
 					last_url = url
 				}
 			}
-
 			time.Sleep(100 * time.Millisecond)
 		})
 
@@ -312,4 +470,6 @@ func main() {
 	}
 
 	<-quit
+	fmt.Println("Closing history.log")
+	file_history.Close()
 }
