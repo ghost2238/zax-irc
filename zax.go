@@ -79,6 +79,7 @@ type Config struct {
 	Nickname   string
 	Server     string
 	ReportChan string
+	UserAgent  string
 	Channels   []Channel
 	Handlers   []string
 	News       []string
@@ -100,7 +101,7 @@ func history_unescape(text string) string {
 }
 
 func history_event(user, event, data string) {
-	line := []string{"event", strconv.FormatInt(time.Now().Unix(), 10), user, history_escape(event), history_escape(data)}
+	line := []string{"event", strconv.FormatInt(time.Now().Unix(), 10), user, history_escape(event), data}
 	file_history_writer.WriteString(strings.Join(line, ",") + "\n")
 	file_history_writer.Flush()
 	s_data := Event{event, user, data, time.Now()}
@@ -109,7 +110,7 @@ func history_event(user, event, data string) {
 }
 
 func history_url(user, url string) {
-	line := []string{"url", strconv.FormatInt(time.Now().Unix(), 10), user, history_escape(url)}
+	line := []string{"url", strconv.FormatInt(time.Now().Unix(), 10), user, url}
 	file_history_writer.WriteString(strings.Join(line, ",") + "\n")
 	file_history_writer.Flush()
 	s_url := Url{url, time.Now()}
@@ -118,7 +119,7 @@ func history_url(user, url string) {
 }
 
 func history_message(user, channel, msg string) {
-	line := []string{"msg", strconv.FormatInt(time.Now().Unix(), 10), user, channel, history_escape(msg)}
+	line := []string{"msg", strconv.FormatInt(time.Now().Unix(), 10), user, channel, msg}
 	file_history_writer.WriteString(strings.Join(line, ",") + "\n")
 	file_history_writer.Flush()
 	s_msg := Message{msg, user, channel, time.Now()}
@@ -213,7 +214,7 @@ func steam_find_app(url string, index int) (int, bool) {
 	return appid, true
 }
 
-func steam_get_appinfo(appid int) (SteamApp, bool) {
+func steam_get_appinfo(appid int, useragent string) (SteamApp, bool) {
 
 	s_appid := strconv.Itoa(appid)
 	app := SteamApp{}
@@ -224,7 +225,7 @@ func steam_get_appinfo(appid int) (SteamApp, bool) {
 		fmt.Println(err.Error())
 		return app, false
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64; rv:43.0) Gecko/20100101 Firefox/43.0")
+	req.Header.Set("User-Agent", useragent)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println(err.Error())
@@ -386,7 +387,44 @@ func main() {
 	file_history_writer = bufio.NewWriter(file_history)
 
 	for reader.Scan() {
-		fmt.Println(reader.Text()) // Println will add back the final '\n'
+		l := reader.Text()
+		is_url := strings.HasPrefix(l, "url")
+		is_msg := strings.HasPrefix(l, "msg")
+		parts := []string{}
+		user := ""
+		channel := ""
+		timestamp := time.Time{}
+
+		if is_url || is_msg {
+			parts = strings.Split(l, ",")
+			ts, _ := strconv.Atoi(parts[1])
+			timestamp = time.Unix(int64(ts), 0)
+			user = parts[2]
+			channel = parts[3]
+			_, ok := userdata[user]
+			if !ok {
+				m := []Message{}
+				e := []Event{}
+				u := []Url{}
+				userdata[user] = &User{m, e, u}
+			}
+		}
+
+		if strings.HasPrefix(l, "msg") {
+			text := ""
+			for i := 4; i < len(parts); i++ {
+				text = text + parts[i]
+			}
+			msg := Message{text, user, channel, timestamp}
+			userdata[user].Messages = append(userdata[user].Messages, msg)
+			msgdata = append(msgdata, msg)
+		}
+
+		if strings.HasPrefix(l, "url") {
+			url := Url{parts[3], timestamp}
+			userdata[user].Urls = append(userdata[user].Urls, url)
+			urldata = append(urldata, url)
+		}
 	}
 
 	fmt.Println("Parsing history...")
@@ -601,7 +639,7 @@ func main() {
 				}
 				if success {
 					fmt.Println("Found appid %d, retrieving info...", steam_appid)
-					app, success2 := steam_get_appinfo(steam_appid)
+					app, success2 := steam_get_appinfo(steam_appid, config.UserAgent)
 					if success2 {
 						info := fmt.Sprintf("[https://steamdb.info/app/%d/] \"%s\" (%s by %s) %s - [%s]", app.Id, app.Name, app.ReleaseYear, app.Developer, app.OS("/"), app.Features("/"))
 						c.Privmsg(line.Target(), info)
