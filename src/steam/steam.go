@@ -13,29 +13,31 @@ import (
 )
 
 type SteamApp struct {
-	Id           int
-	AppType      string
-	Name         string
-	Developer    string
-	Publisher    string
-	ReleaseDate  string
-	ReleaseYear  string
-	Rating       float32
-	Reviews      int
-	InGame       int
-	Achievements bool
-	Linux        bool
-	Windows      bool
-	OSX          bool
-	SinglePlayer bool
-	MultiPlayer  bool
-	MMO          bool
-	VAC          bool
-	EarlyAccess  bool
-	SteamCloud   bool
-	Coop         bool
-	Workshop     bool
-	TradingCards bool
+	Id            int
+	AppType       string
+	Name          string
+	Developer     string
+	Publisher     string
+	ReleaseDate   string
+	ReleaseYear   string
+	Price         string
+	PriceDiscount string
+	Rating        float32
+	Reviews       int
+	InGame        int
+	Achievements  bool
+	Linux         bool
+	Windows       bool
+	OSX           bool
+	SinglePlayer  bool
+	MultiPlayer   bool
+	MMO           bool
+	VAC           bool
+	EarlyAccess   bool
+	SteamCloud    bool
+	Coop          bool
+	Workshop      bool
+	TradingCards  bool
 }
 
 func (app SteamApp) Features(sep string) string {
@@ -102,7 +104,7 @@ func html_find_all(node *html.Node, matcher Matcher) []*html.Node {
 	return matched
 }
 
-/*func get_appinfo_steampowered(appid int, useragent string) (SteamApp, bool) {
+func get_appinfo_steampowered(appid int, useragent string) (SteamApp, bool) {
 	s_appid := strconv.Itoa(appid)
 	app := SteamApp{}
 	app.Id = appid
@@ -127,7 +129,88 @@ func html_find_all(node *html.Node, matcher Matcher) []*html.Node {
 		return app, false
 	}
 	s_body := string(body)
-}*/
+	s_body_nocr := strings.Replace(s_body, "\n", "", -1)
+
+	re_name := regexp.MustCompile("<span itemprop=\"name\">(.+?)</span>")
+	re_releasedate := regexp.MustCompile("<span class=\"date\">(.+?)</span>")
+	release := re_releasedate.FindStringSubmatch(s_body)
+	if release != nil {
+		date := strings.Replace(release[1], ",", "", -1)
+		date_p := strings.Split(date, " ")
+		app.ReleaseDate = release[1]
+		app.ReleaseYear = date_p[2]
+	} else {
+		fmt.Println("Unable to parse release date.")
+	}
+
+	name := re_name.FindStringSubmatch(s_body)
+	if name != nil {
+		app.Name = name[1]
+	}
+
+	// Parse rating
+	re_rating := regexp.MustCompile("(\\d+?\\.*\\d+?)% of the (\\d+,*\\d*?) user reviews for this game")
+	re_rating_m := re_rating.FindStringSubmatch(s_body)
+	if re_rating_m != nil {
+		fmt.Println(re_rating_m[0])
+		f_rating, _err := strconv.ParseFloat(re_rating_m[1], 32)
+		if _err == nil {
+			app.Rating = float32(f_rating)
+		}
+		i_reviews, _err := strconv.Atoi(strings.Replace(re_rating_m[2], ",", "", -1))
+		if _err == nil {
+			app.Reviews = i_reviews
+		}
+	}
+	re_dev := regexp.MustCompile("\\?developer.+\">(.+?)</a>")
+	re_pub := regexp.MustCompile("\\?publisher.+\">(.+?)</a>")
+	re_price := regexp.MustCompile("<div class=\"game_purchase_price price\">(.+?)</div>")
+	re_price_orig := regexp.MustCompile("<div class=\"discount_original_price\">(.+?)</div>")
+	re_price_discount := regexp.MustCompile("<div class=\"discount_final_price\">(.+?)</div>")
+
+	price := re_price.FindStringSubmatch(s_body_nocr)
+	price_orig := re_price_orig.FindStringSubmatch(s_body)
+	price_discount := re_price_discount.FindStringSubmatch(s_body)
+	if price != nil {
+		app.Price = strings.TrimSpace(price[1])
+	}
+	if price_orig != nil {
+		app.Price = strings.TrimSpace(price_orig[1])
+	}
+	if price_discount != nil {
+		app.PriceDiscount = strings.TrimSpace(price_discount[1])
+	}
+
+	dev := re_dev.FindStringSubmatch(s_body)
+	if dev != nil {
+		//fmt.Println("Found dev:" + dev[1])
+		app.Developer = html.UnescapeString(dev[1])
+	}
+	pub := re_pub.FindStringSubmatch(s_body)
+	if pub != nil {
+		//fmt.Println("Found dev:" + dev[1])
+		app.Publisher = html.UnescapeString(dev[1])
+	}
+
+	// OS
+	app.Linux = strings.Contains(s_body, "platform_img linux")
+	app.Windows = strings.Contains(s_body, "platform_img win")
+	app.OSX = strings.Contains(s_body, "platform_img mac")
+
+	// Features
+	app.SteamCloud = strings.Contains(s_body, ">Steam Cloud</a>")
+	app.SinglePlayer = strings.Contains(s_body, ">Single-player</a>")
+	app.MultiPlayer = strings.Contains(s_body, ">Multi-player</a>")
+	app.Coop = strings.Contains(s_body, ">Local Co-op</a>")
+	app.MMO = strings.Contains(s_body, ">MMO</a>")
+	app.VAC = strings.Contains(s_body, ">Valve Anti-Cheat enabled</a>")
+	app.EarlyAccess = strings.Contains(s_body, "<h1 class=\"inset\">Early Access Game</h1>")
+	app.TradingCards = strings.Contains(s_body, ">Steam Trading Cards</a>")
+	app.Achievements = strings.Contains(s_body, ">Steam Achievements</a>")
+	app.Workshop = strings.Contains(s_body, ">Steam Workshop</a>")
+
+	return app, true
+}
 
 func get_appinfo_steamdb(appid int, useragent string) (SteamApp, bool) {
 	s_appid := strconv.Itoa(appid)
@@ -200,6 +283,7 @@ func get_appinfo_steamdb(appid int, useragent string) (SteamApp, bool) {
 		if i != len(cells)-1 {
 			content = cells[i+1][1]
 			content = strings.Replace(content, "&reg;", "", -1)
+			content = strings.TrimSpace(content)
 		}
 		if strings.Contains(cell[1], "App Type") {
 			app.AppType = content
@@ -210,15 +294,13 @@ func get_appinfo_steamdb(appid int, useragent string) (SteamApp, bool) {
 		if strings.Contains(cell[1], "Developer") {
 			dev := re_inner.FindStringSubmatch(content)
 			if dev != nil {
-				//fmt.Println("Found dev:" + dev[1])
-				app.Developer = html.UnescapeString(dev[1])
+				app.Developer = strings.TrimSpace(html.UnescapeString(dev[1]))
 			}
 		}
 		if strings.Contains(cell[1], "Publisher") {
 			publisher := re_inner.FindStringSubmatch(content)
 			if publisher != nil {
-				//fmt.Println("Found publisher:" + publisher[1])
-				app.Publisher = html.UnescapeString(publisher[1])
+				app.Publisher = strings.TrimSpace(html.UnescapeString(publisher[1]))
 			}
 		}
 	}
@@ -300,7 +382,15 @@ func SearchSteampowered(url string, index int) (int, bool) {
 }
 
 func GetAppInfo(appid int, useragent string) (SteamApp, bool) {
-	return get_appinfo_steamdb(appid, useragent)
+	app, result := get_appinfo_steampowered(appid, useragent)
+	// fallback methods
+	if app.Name == "" || !result {
+		app, result = get_appinfo_steamdb(appid, useragent)
+		if app.Name == "" || !result {
+			return app, false
+		}
+	}
+	return app, true
 }
 
 func steam_test() {
