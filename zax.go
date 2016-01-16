@@ -8,6 +8,8 @@ import (
 	"github.com/mvdan/xurls"
 	"github.com/yhat/scrape"
 	"golang.org/x/net/html"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 	"math/rand"
 	"net/http"
 	"os"
@@ -67,9 +69,9 @@ var userdata map[string]*User
 var file_history *os.File
 var file_history_writer *bufio.Writer
 
-// for context.
-var last_context_index := 0
-var last_context_type := ""
+// for context control.
+var last_context_index int
+var last_context_type string
 
 func history_escape(text string) string {
 	return strings.Replace(text, ",", "\\,", -1)
@@ -180,6 +182,54 @@ func get_insult() string {
 	msg := []string{"What do you think you are doing?", "You're not a good person. You know that, right?", "Typical human.",
 		"You don't even care. Do you?", "I guess we both know that isn't going to happen.", "All right, keep doing whatever it is you think you're doing.", "Are you sober?"}
 	return msg[rand_int(0, len(msg)-1)]
+}
+
+func remove_control_codes(str string) string {
+	b := make([]byte, len(str))
+	var bl int
+	for i := 0; i < len(str); i++ {
+		c := str[i]
+		if c >= 32 && c != 127 {
+			b[bl] = c
+			bl++
+		}
+	}
+	b = make([]byte, len(str))
+	for i := 0; i < len(str); i++ {
+		c := str[i]
+		if c >= 32 && c < 127 {
+			b[bl] = c
+			bl++
+		}
+	}
+	// two UTF-8 functions identical except for operator comparing c to 127
+	str = strings.Map(func(r rune) rune {
+		if r >= 32 && r != 127 {
+			return r
+		}
+		return -1
+	}, str)
+	str = strings.Map(func(r rune) rune {
+		if r >= 32 && r < 127 {
+			return r
+		}
+		return -1
+	}, str)
+
+	// Advanced Unicode normalization and filtering,
+	// see http://blog.golang.org/normalization and
+	// http://godoc.org/golang.org/x/text/unicode/norm for more
+	// details.
+	isOk := func(r rune) bool {
+		return r < 32 || r >= 127
+	}
+	// The isOk filter is such that there is no need to chain to norm.NFC
+	t := transform.Chain(norm.NFKD, transform.RemoveFunc(isOk))
+	// This Transformer could also trivially be applied as an io.Reader
+	// or io.Writer filter to automatically do such filtering when reading
+	// or writing data anywhere.
+	str, _, _ = transform.String(t, str)
+	return str
 }
 
 func main() {
@@ -303,6 +353,10 @@ func main() {
 
 			sender := line.Nick
 			text := line.Text()
+			// Remove control characters
+			text = strings.Replace(text, "", "", -1)
+			text = strings.Replace(text, "", "", -1)
+
 			channel := line.Target()
 			fmt.Println("[" + line.Target() + "] " + sender + ": " + text)
 
@@ -334,7 +388,6 @@ func main() {
 			cmd_help := []string{"?h"}
 			//cmd_seen := []string{".seen", ""}
 			args := strings.Split(text, " ")
-			user := ""
 
 			if is_command(text, cmd_help) {
 				if text == "?h" {
@@ -471,30 +524,29 @@ func main() {
 				c.Privmsg(channel, fmt.Sprintf("%s was last seen %s ago %s.", seen_user, time_str, action))
 			}
 
-			// Parse user for history commands
-			if is_command(text, cmd_url) || is_command(text, cmd_msg) {
-				re := regexp.MustCompile(fmt.Sprintf("%s %s.+(u=[[:alnum:]]+)", args[0], args[1]))
-				match := re.FindStringSubmatch(text)
-				if match != nil {
-					user = match[1]
-				}
-			}
+			// For cmd_url and cmd_msg
+			is_cmd_last := args[1] == "last" || args[1] == "l"
+			is_cmd_random := args[1] == "random" || args[1] == "r"
+			is_cmd_find := args[1] == "find" || args[1] == "f"
 
 			if is_command(text, cmd_url) {
 				var url Url
 				var urls []Url
-				if user != "" {
-					urls = userdata[user].Urls
-				} else {
-					urls = urldata
+				urls = urldata
+
+				if is_cmd_last || is_cmd_random && len(args) == 3 {
+					user_urls := userdata[args[2]].Urls
+					if user_urls != nil {
+						urls = user_urls
+					}
 				}
-				if args[1] == "last" || args[1] == "l" {
+				if is_cmd_last {
 					url = urls[len(urls)-1]
 				}
-				if args[1] == "random" || args[1] == "r" {
+				if is_cmd_random {
 					url = urls[rand_int(0, len(urls)-1)]
 				}
-				if args[1] == "find" || args[1] == "f" {
+				if is_cmd_find {
 					expr := ""
 					for i := 2; i < len(args); i++ {
 						expr += expr + args[i]
@@ -517,11 +569,14 @@ func main() {
 			if is_command(text, cmd_msg) {
 				var msg Message
 				var msgs []Message
-				if user != "" {
-					msgs = userdata[user].Messages
-				} else {
-					msgs = msgdata
+
+				if is_cmd_last || is_cmd_random && len(args) == 3 {
+					user_msgs := userdata[args[2]].Messages
+					if user_msgs != nil {
+						msgs = user_msgs
+					}
 				}
+
 				if args[1] == "last" || args[1] == "l" {
 					msg = msgs[len(msgs)-2]
 				}
@@ -608,7 +663,23 @@ func main() {
 					fmt.Println(fmt.Sprintf("Found appid %d, retrieving info...", steam_appid))
 					app, success2 := steam.GetAppInfo(steam_appid, config.UserAgent)
 					if success2 {
-						info := fmt.Sprintf("[https://steamdb.info/app/%d/] \"%s\" (%s by %s) %s - [%s] | %.1f%s rating (%d reviews)", app.Id, app.Name, app.ReleaseYear, app.Developer, app.OS("/"), app.Features("/"), app.Rating, "%", app.Reviews)
+						rating_str := ""
+						if app.Reviews > 0 {
+							rating_str = fmt.Sprintf("| %.1f%s rating (%d reviews)", app.Rating, "%", app.Reviews)
+						}
+
+						os_str := ""
+						if app.OS("") != "" {
+							os_str = fmt.Sprintf("%s - [%s]", app.OS("/"), app.Features("/"))
+						}
+						price := ""
+						if app.PriceDiscount != "" {
+							price = app.PriceDiscount
+						} else {
+							price = app.Price
+						}
+
+						info := fmt.Sprintf("[http://steamspy.com/app/%d/] \"%s\" (%s by \"%s\") %s %s | %s", app.Id, app.Name, app.ReleaseYear, app.Developer, os_str, rating_str, price)
 						c.Privmsg(line.Target(), info)
 						fmt.Println(info)
 					} else {
@@ -622,6 +693,8 @@ func main() {
 			}
 			// Handle URLs
 			if !(sender == "Wipe" && (strings.Contains(text, "Steam") || strings.Contains(text, "YouTube"))) {
+				//sanitized := remove_control_codes(text)
+				//fmt.Println("url:" + sanitized)
 				urls := xurls.Relaxed.FindAllString(text, -1)
 				for i := 0; i < len(urls); i++ {
 					url := urls[i]
