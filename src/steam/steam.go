@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+type Trending struct {
+	Id       int
+	Name     string
+	Increase string
+	Players  int
+}
+
 type SteamApp struct {
 	Id            int
 	AppType       string
@@ -379,6 +386,51 @@ func SearchSteampowered(url string, index int) (int, bool) {
 		return -1, false
 	}
 	return appid, true
+}
+
+func GetTrending(useragent string) (games_result []Trending, success bool) {
+	games := []Trending{}
+
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", "http://steamcharts.com/", nil)
+	if err != nil {
+		fmt.Println(err.Error())
+		return games, false
+	}
+	req.Header.Set("User-Agent", useragent)
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println(err.Error())
+		return games, false
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println(err.Error())
+		return games, false
+	}
+	s_body := string(body)
+	s_body = strings.Replace(s_body, "\n", "", -1)
+
+	re := regexp.MustCompile("td class=\"game-name left\">.+?href=\"/app/(\\d+?)\">(.+?)</a>.+?\"gain\">(.+?)</td>.+? class=\"num\">(.+?)</td>")
+	matches := re.FindAllStringSubmatch(s_body, -1)
+	if matches != nil {
+		for _, match := range matches {
+			fmt.Println(fmt.Sprintf("Found match: %s, %s, %s, %s", match[1], match[2], match[3], match[4]))
+			app_s := match[1]
+			name := strings.TrimSpace(match[2])
+			gain := html.UnescapeString(match[3])
+			num_s := strings.Replace(match[4], ",", "", -1)
+
+			app, _ := strconv.Atoi(app_s)
+			num, _ := strconv.Atoi(num_s)
+
+			games = append(games, Trending{app, name, gain, num})
+		}
+		return games, true
+	}
+	return games, false
 }
 
 func GetAppInfo(appid int, useragent string) (SteamApp, bool) {
