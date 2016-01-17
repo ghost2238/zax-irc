@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"games"
 	irc "github.com/fluffle/goirc/client"
 	"github.com/mvdan/xurls"
 	"github.com/yhat/scrape"
@@ -41,6 +42,7 @@ type Event struct {
 	Event     string
 	User      string
 	Data      string // e.g quit message
+	Channel   string
 	Timestamp time.Time
 }
 
@@ -50,8 +52,14 @@ type User struct {
 	Urls     []Url
 }
 
+type OfflineMsg struct {
+	Sender    string
+	Recipient string
+	Timestamp time.Time
+}
+
 type Config struct {
-	Admin      string
+	Admin      string // nick:<expr> | host:<expr>
 	Username   string
 	Nickname   string
 	Server     string
@@ -62,12 +70,15 @@ type Config struct {
 	News       []string
 }
 
+// History
 var msgdata []Message
 var eventdata []Event
 var urldata []Url
 var userdata map[string]*User
 var file_history *os.File
 var file_history_writer *bufio.Writer
+
+var ignore_list []string // Ignore these usernames
 
 // for context control.
 var last_context_index int
@@ -81,11 +92,11 @@ func history_unescape(text string) string {
 	return strings.Replace(text, "\\,", ",", -1)
 }
 
-func history_event(user, event, data string) {
-	line := []string{"event", strconv.FormatInt(time.Now().Unix(), 10), user, history_escape(event), data}
+func history_event(user, event, data, channel string) {
+	line := []string{"event", strconv.FormatInt(time.Now().Unix(), 10), user, channel, history_escape(event), data}
 	file_history_writer.WriteString(strings.Join(line, ",") + "\n")
 	file_history_writer.Flush()
-	s_data := Event{event, user, data, time.Now()}
+	s_data := Event{event, user, data, channel, time.Now()}
 	userdata[user].Events = append(userdata[user].Events, s_data)
 	eventdata = append(eventdata, s_data)
 }
@@ -160,6 +171,7 @@ func rand_int(min, max int) int {
 
 func is_command(text string, cmds []string) bool {
 	for _, cmd := range cmds {
+		//fmt.Println("cmd: " + cmd)
 		if strings.HasPrefix(text, cmd) {
 			return true
 		}
@@ -170,18 +182,22 @@ func is_command(text string, cmds []string) bool {
 func get_quit_msg() string {
 	msg := []string{"Uh, never mind.", "This system is too advanced for you.", "That was an illogical decision.",
 		"Weeeeeeeeeeeeeeeeeeeeee[bzzt]", "Didn't we have some fun, though?", "Your entire life has been a mathematical error."}
-	return msg[rand_int(0, len(msg)-1)]
+	return msg[rand_int(0, len(msg))]
 }
+
+/*func get_greeting_msg(user string) string {
+
+}*/
 
 func get_user_not_exists() string {
 	msg := []string{"Who?", "Never heard of that human.", "Negative, no record found", "Did you spell that correctly?", "Are you sober?"}
-	return msg[rand_int(0, len(msg)-1)]
+	return msg[rand_int(0, len(msg))]
 }
 
 func get_insult() string {
 	msg := []string{"What do you think you are doing?", "You're not a good person. You know that, right?", "Typical human.",
 		"You don't even care. Do you?", "I guess we both know that isn't going to happen.", "All right, keep doing whatever it is you think you're doing.", "Are you sober?"}
-	return msg[rand_int(0, len(msg)-1)]
+	return msg[rand_int(0, len(msg))]
 }
 
 func remove_control_codes(str string) string {
@@ -260,12 +276,13 @@ func main() {
 		l := reader.Text()
 		is_url := strings.HasPrefix(l, "url")
 		is_msg := strings.HasPrefix(l, "msg")
+		is_event := strings.HasPrefix(l, "event")
 		parts := []string{}
 		user := ""
 		channel := ""
 		timestamp := time.Time{}
 
-		if is_url || is_msg {
+		if is_url || is_msg || is_event {
 			parts = strings.Split(l, ",")
 			ts, _ := strconv.ParseInt(parts[1], 10, 64)
 			timestamp = time.Unix(ts, 0)
@@ -279,6 +296,17 @@ func main() {
 				u := []Url{}
 				userdata[user] = &User{m, e, u}
 			}
+		}
+		if strings.HasPrefix(l, "event") {
+			evt_s := parts[4]
+			data := ""
+			if len(parts) == 6 {
+				data = parts[5]
+			}
+
+			event := Event{evt_s, user, data, channel, timestamp}
+			userdata[user].Events = append(userdata[user].Events, event)
+			eventdata = append(eventdata, event)
 		}
 
 		if strings.HasPrefix(l, "msg") {
@@ -326,8 +354,8 @@ func main() {
 
 	c.HandleFunc(irc.JOIN,
 		func(conn *irc.Conn, line *irc.Line) {
-			fmt.Println("[" + line.Target() + "] " + line.Nick + " (~" + line.Ident + "@" + line.Host + ") has joined.")
-			history_event(line.Nick, "join", "")
+			fmt.Println("[" + line.Target() + "] " + line.Nick + " (" + line.Ident + "@" + line.Host + ") has joined.")
+			history_event(line.Nick, "join", "", line.Target())
 			if line.Nick == config.Nickname {
 				return
 			}
@@ -337,7 +365,7 @@ func main() {
 	c.HandleFunc(irc.QUIT,
 		func(conn *irc.Conn, line *irc.Line) {
 			fmt.Println("[" + line.Target() + "] " + line.Nick + " (" + line.Ident + "@" + line.Host + ") has quit.")
-			history_event(line.Nick, "quit", line.Text())
+			history_event(line.Nick, "quit", line.Text(), "")
 			time.Sleep(100 * time.Millisecond)
 		})
 
@@ -351,6 +379,7 @@ func main() {
 		func(conn *irc.Conn, line *irc.Line) {
 			time.Sleep(100 * time.Millisecond)
 
+			sender_host := line.Host
 			sender := line.Nick
 			text := line.Text()
 			// Remove control characters
@@ -374,24 +403,48 @@ func main() {
 				c.Privmsg(config.ReportChan, "["+line.Target()+"] "+sender+": "+text)
 			}
 
-			if sender == config.Admin {
-				if line.Text() == "<<" {
+			cmd_admin := []string{"%%", "<<"}
+			// Check if admin
+			if is_command(text, cmd_admin) {
+				re_adm := regexp.MustCompile("(nick|host):(.+)")
+				criteria := re_adm.FindStringSubmatch(config.Admin)
+				//is_admin := false
+				match_str := ""
+
+				if criteria == nil {
+					fmt.Println("Unable to parse admin criteria.")
+					return
+				}
+				re_adm_eval := regexp.MustCompile(criteria[2])
+				if criteria[1] == "nick" {
+					match_str = sender
+				}
+				if criteria[1] == "host" {
+					match_str = sender_host
+				}
+				if !re_adm_eval.MatchString(match_str) {
+					fmt.Println(fmt.Sprintf("Didn't pass the criteria: %s:%s", criteria[1], criteria[2]))
+					return
+				}
+				fmt.Println(fmt.Sprintf("Passed the criteria: %s:%s with %s", criteria[1], criteria[2], match_str))
+				if text == "<<" {
 					c.Quit(get_quit_msg())
 				}
 			}
 
 			cmd_rand := []string{".r", ".random"}
 			cmd_steam := []string{".s", ".steam"}
+			cmd_game := []string{".g", ".game"}
 			cmd_url := []string{".u", ".url"}
 			cmd_msg := []string{".m", ".msg"}
+			//cmd_youtube := []string{".y", ".youtube", ".yt"}
 			cmd_seen := []string{"!"}
 			cmd_help := []string{"?h"}
 			//cmd_seen := []string{".seen", ""}
 			args := strings.Split(text, " ")
-
 			if is_command(text, cmd_help) {
 				if text == "?h" {
-					c.Privmsg(channel, "Cmds: [[.r(andom) .s(team) .u(rl) .m(sg) !]] -- Type ?h <cmd> for more info.")
+					c.Privmsg(channel, "Cmds: [[.g(ame) .r(andom) .s(team) .u(rl) .m(sg) !]] -- Type ?h <cmd> for more info.")
 				}
 				if args[1] == "!" {
 					c.Privmsg(channel, "Checks when user was last seen. Syntax: !<username>")
@@ -400,7 +453,16 @@ func main() {
 					c.Privmsg(channel, "Generate random number. Syntax: .random <min> <max>")
 				}
 				if is_command(args[1], cmd_steam) {
-					c.Privmsg(channel, "Search steam. Syntax: .steam [ find | latest | random | appid] <expression>")
+					if len(args) == 3 {
+						if args[2] == "symbols" {
+							c.Privmsg(channel, "MP=MultiPlayer, SP=SinglePlayer, CO=Co-op VAC=Valve Anti-Cheat, TC=Trading Card, Ach=Achievments, EA=Early Access, WS=Workshop support")
+						}
+					} else {
+						c.Privmsg(channel, "Search steam. For result symbols type '?h .s symbols' Syntax: .steam [ find | latest | random | trending | appid] <expression>")
+					}
+				}
+				if is_command(args[1], cmd_game) {
+					c.Privmsg(channel, "Search for game info. Syntax: .game <query>")
 				}
 				if is_command(args[1], cmd_msg) {
 					c.Privmsg(channel, "Search message log. Syntax: .msg [ find | latest | random ] <expression>")
@@ -408,14 +470,17 @@ func main() {
 				if is_command(args[1], cmd_url) {
 					c.Privmsg(channel, "Search URL log. Syntax: .url [ find | latest | random ] <expression>")
 				}
-				return
 			}
-
 			if is_command(text, cmd_seen) {
+				fmt.Println("Executing seen command.")
 				seen_user := strings.Replace(args[0], "!", "", -1)
 				if seen_user == "" {
 					return
 				}
+				if seen_user == sender {
+					c.Privmsg(channel, get_insult())
+				}
+
 				state := c.StateTracker().GetNick(seen_user)
 				if state != nil {
 					user_channels := state.Channels
@@ -428,7 +493,6 @@ func main() {
 								c.Privmsg(channel, get_insult())
 								return
 							} else {
-								// TODO: Check if requesting user is also on the channel.
 								sender_state := c.StateTracker().GetNick(sender)
 								_, exists := sender_state.Channels[ch.Chan]
 								if exists {
@@ -436,7 +500,6 @@ func main() {
 								} else {
 									c.Privmsg(channel, "Yeah, somewhere... can't tell you where though.")
 								}
-
 								return
 							}
 						}
@@ -524,15 +587,26 @@ func main() {
 				c.Privmsg(channel, fmt.Sprintf("%s was last seen %s ago %s.", seen_user, time_str, action))
 			}
 
-			// For cmd_url and cmd_msg
-			is_cmd_last := args[1] == "last" || args[1] == "l"
-			is_cmd_random := args[1] == "random" || args[1] == "r"
-			is_cmd_find := args[1] == "find" || args[1] == "f"
+			if is_command(text, cmd_game) {
+				//query := strings.Replace(text, cmd_game, "")
+				query := ""
+				for i := 1; i < len(args); i++ {
+					query += " " + args[i]
+				}
+				games, success := games.FindGames(query, "Mozilla/5.0 (Windows NT 10.0; WOW64; rv:43.0) Gecko/20100101 Firefox/43.0")
+				if success {
+					c.Privmsg(channel, fmt.Sprintf("%s (%s) - %s\n", games[0].Name, games[0].Year, games[0].Url))
+				}
+			}
 
 			if is_command(text, cmd_url) {
 				var url Url
 				var urls []Url
 				urls = urldata
+
+				is_cmd_last := args[1] == "last" || args[1] == "l"
+				is_cmd_random := args[1] == "random" || args[1] == "r"
+				is_cmd_find := args[1] == "find" || args[1] == "f"
 
 				if is_cmd_last || is_cmd_random && len(args) == 3 {
 					user_urls := userdata[args[2]].Urls
@@ -570,6 +644,10 @@ func main() {
 				var msg Message
 				var msgs []Message
 
+				is_cmd_last := args[1] == "last" || args[1] == "l"
+				is_cmd_random := args[1] == "random" || args[1] == "r"
+				is_cmd_find := args[1] == "find" || args[1] == "f"
+
 				if is_cmd_last || is_cmd_random && len(args) == 3 {
 					user_msgs := userdata[args[2]].Messages
 					if user_msgs != nil {
@@ -577,13 +655,13 @@ func main() {
 					}
 				}
 
-				if args[1] == "last" || args[1] == "l" {
+				if is_cmd_last {
 					msg = msgs[len(msgs)-2]
 				}
-				if args[1] == "random" || args[1] == "r" {
+				if is_cmd_random {
 					msg = msgs[rand_int(0, len(msgs)-1)]
 				}
-				if args[1] == "find" || args[1] == "f" {
+				if is_cmd_find {
 					expr := ""
 					for i := 2; i < len(args); i++ {
 						add := args[i]
@@ -609,7 +687,6 @@ func main() {
 				c.Privmsg(channel, fmt.Sprintf("[%d-%02d-%02d %02d:%02d:%02d] %v: %v", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), msg.User, msg.Msg))
 				return
 			}
-
 			if is_command(text, cmd_rand) {
 				if len(args) < 3 {
 					return
@@ -627,7 +704,6 @@ func main() {
 
 				c.Privmsg(line.Target(), "What about... "+strconv.Itoa(rand_int(int(min), int(max))))
 			}
-
 			if is_command(text, cmd_steam) {
 				if len(args) < 2 {
 					return
@@ -641,8 +717,17 @@ func main() {
 				}
 				if subcommand == "random" || subcommand == "r" {
 					page := strconv.Itoa(rand_int(1, 286))
-					steam_appid, success = steam.SearchSteampowered("http://store.steampowered.com/search/?sort_by=Released_DESC&tags=-1&category1=998&page="+page, 0)
+					steam_appid, success = steam.SearchSteampowered("http://store.steampowered.com/search/?sort_by=Released_DESC&tags=-1&category1=998&page="+page, -2)
 				}
+				if subcommand == "trending" || subcommand == "t" {
+					apps, suc := steam.GetTrending("Mozilla/5.0 (Windows NT 10.0; WOW64; rv:43.0) Gecko/20100101 Firefox/43.0")
+					if suc {
+						app := apps[0]
+						str := fmt.Sprintf("[Steamcharts] %s [%s increase in players last 24h] %d current players. Type '.s a %d' to get more info.", app.Name, app.Increase, app.Players, app.Id)
+						c.Privmsg(line.Target(), str)
+					}
+				}
+
 				if subcommand == "appid" || subcommand == "a" {
 					steam_appid, err = strconv.Atoi(args[2])
 					success = (err == nil)
@@ -674,12 +759,18 @@ func main() {
 						}
 						price := ""
 						if app.PriceDiscount != "" {
-							price = app.PriceDiscount
+							price = "| " + app.PriceDiscount
 						} else {
-							price = app.Price
+							if app.Price != "" {
+								price = "| " + app.Price
+							}
+						}
+						base_str := ""
+						if app.ReleaseYear != "" && app.Developer != "" {
+							base_str = fmt.Sprintf("(%s by \"%s\")", app.ReleaseYear, app.Developer)
 						}
 
-						info := fmt.Sprintf("[http://steamspy.com/app/%d/] \"%s\" (%s by \"%s\") %s %s | %s", app.Id, app.Name, app.ReleaseYear, app.Developer, os_str, rating_str, price)
+						info := fmt.Sprintf("[http://steamspy.com/app/%d/] \"%s\" %s %s %s %s", app.Id, app.Name, base_str, os_str, rating_str, price)
 						c.Privmsg(line.Target(), info)
 						fmt.Println(info)
 					} else {
@@ -693,6 +784,7 @@ func main() {
 			}
 			// Handle URLs
 			if !(sender == "Wipe" && (strings.Contains(text, "Steam") || strings.Contains(text, "YouTube"))) {
+				fmt.Println("Looking for URLs...")
 				//sanitized := remove_control_codes(text)
 				//fmt.Println("url:" + sanitized)
 				urls := xurls.Relaxed.FindAllString(text, -1)
