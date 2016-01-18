@@ -513,8 +513,8 @@ func main() {
 				duration := time.Since(time_seen)
 				days := 0
 				hours := 0
-				sec := int(duration.Seconds())
-				min := int(duration.Minutes())
+				sec := 0
+				min := 0
 
 				log.Debugf("User %s seen hours: %.1f, minutes: %.1f, seconds %.1f ago.", seen_user, duration.Hours(), duration.Minutes(), duration.Seconds())
 
