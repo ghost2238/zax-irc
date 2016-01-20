@@ -51,7 +51,7 @@ type Event struct {
 	Timestamp time.Time
 }
 
-type User struct {
+type HistoryData struct {
 	Messages []Message
 	Events   []Event
 	Urls     []Url
@@ -76,11 +76,13 @@ type ZAX struct {
 	IrcClient *client.Conn
 }
 
+type IrcHistory struct {
+	data     HistoryData
+	userdata map[string]*HistoryData
+}
+
 // History
-var msgdata []Message
-var eventdata []Event
-var urldata []Url
-var userdata map[string]*User
+var history IrcHistory
 var file_history *os.File
 var file_history_writer *bufio.Writer
 
@@ -90,19 +92,15 @@ var config Config
 
 var last_url string
 
-// for context control.
-var last_context_index int
-var last_context_type string
-
 var zax ZAX
 
 func (zax ZAX) Privmsg(t, msg string) {
-	log.Debugf("Zax::Privmsg: [%s] %s", t, msg)
+	log.Debugf("Privmsg: [%s] %s", t, msg)
 	zax.IrcClient.Privmsg(t, msg)
 }
 
 func (zax ZAX) Quit(msg string) {
-	log.Debugf("Zax::Quit: %s", msg)
+	log.Debugf("Quit: %s", msg)
 	zax.IrcClient.Quit(msg)
 }
 
@@ -114,31 +112,62 @@ func history_unescape(text string) string {
 	return strings.Replace(text, "\\,", ",", -1)
 }
 
-func history_event(user, event, data, channel string) {
+func (history IrcHistory) InitUser(user string) {
+	_, ok := history.userdata[user]
+	if !ok {
+		log.Debugf("Loading user '%s' into history struct", user)
+		m := []Message{}
+		e := []Event{}
+		u := []Url{}
+		history.userdata[user] = &HistoryData{m, e, u}
+	}
+}
+
+func (history IrcHistory) IsUserInit(user string) bool {
+	_, ok := history.userdata[user]
+	return ok
+}
+
+func (history IrcHistory) AddEvent(user, event, data, channel string) {
+	if !history.IsUserInit(user) {
+		history.InitUser(user)
+	}
+	log.Debugf("Adding event '%s' for user '%s', channel is %s, additional data: %s", event, user, channel, data)
+
 	line := []string{"event", strconv.FormatInt(time.Now().Unix(), 10), user, channel, history_escape(event), data}
 	file_history_writer.WriteString(strings.Join(line, ",") + "\n")
 	file_history_writer.Flush()
 	s_data := Event{event, user, data, channel, time.Now()}
-	userdata[user].Events = append(userdata[user].Events, s_data)
-	eventdata = append(eventdata, s_data)
+	history.userdata[user].Events = append(history.userdata[user].Events, s_data)
+	history.data.Events = append(history.data.Events, s_data)
 }
 
-func history_url(user, url string) {
+func (history IrcHistory) AddUrl(user, url string) {
+	if !history.IsUserInit(user) {
+		history.InitUser(user)
+	}
+	log.Debugf("Adding url '%s' for user '%s'", url, user)
+
 	line := []string{"url", strconv.FormatInt(time.Now().Unix(), 10), user, url}
 	file_history_writer.WriteString(strings.Join(line, ",") + "\n")
 	file_history_writer.Flush()
 	s_url := Url{url, time.Now()}
-	userdata[user].Urls = append(userdata[user].Urls, s_url)
-	urldata = append(urldata, s_url)
+	history.userdata[user].Urls = append(history.userdata[user].Urls, s_url)
+	history.data.Urls = append(history.data.Urls, s_url)
 }
 
-func history_message(user, channel, msg string) {
+func (history IrcHistory) AddMessage(user, channel, msg string) {
+	if !history.IsUserInit(user) {
+		history.InitUser(user)
+	}
+	log.Debugf("Adding message '%s' for user '%s' in channel '%s'", msg, user, channel)
+
 	line := []string{"msg", strconv.FormatInt(time.Now().Unix(), 10), user, channel, msg}
 	file_history_writer.WriteString(strings.Join(line, ",") + "\n")
 	file_history_writer.Flush()
 	s_msg := Message{msg, user, channel, time.Now()}
-	userdata[user].Messages = append(userdata[user].Messages, s_msg)
-	msgdata = append(msgdata, s_msg)
+	history.userdata[user].Messages = append(history.userdata[user].Messages, s_msg)
+	history.data.Messages = append(history.data.Messages, s_msg)
 }
 
 func rand_int(min, max int) int {
@@ -198,7 +227,13 @@ func main() {
 	logging.SetBackend(log_stdout_levelled, log_file_f)
 
 	last_url = ""
-	userdata = make(map[string]*User)
+
+	m := []Message{}
+	e := []Event{}
+	u := []Url{}
+	history = IrcHistory{}
+	history.data = HistoryData{m, e, u}
+	history.userdata = make(map[string]*HistoryData)
 	log.Notice("Loading config...")
 
 	file, _ := os.Open("conf.json")
@@ -238,12 +273,8 @@ func main() {
 			//log.Debugf("[%d-%02d-%02d %02d:%02d:%02d]", timestamp.Year(), timestamp.Month(), timestamp.Day(), timestamp.Hour(), timestamp.Minute(), timestamp.Second())
 			user = parts[2]
 			channel = parts[3]
-			_, ok := userdata[user]
-			if !ok {
-				m := []Message{}
-				e := []Event{}
-				u := []Url{}
-				userdata[user] = &User{m, e, u}
+			if !history.IsUserInit(user) {
+				history.InitUser(user)
 			}
 		}
 		if strings.HasPrefix(l, "event") {
@@ -254,8 +285,8 @@ func main() {
 			}
 
 			event := Event{evt_s, user, data, channel, timestamp}
-			userdata[user].Events = append(userdata[user].Events, event)
-			eventdata = append(eventdata, event)
+			history.userdata[user].Events = append(history.userdata[user].Events, event)
+			history.data.Events = append(history.data.Events, event)
 		}
 
 		if strings.HasPrefix(l, "msg") {
@@ -264,18 +295,18 @@ func main() {
 				text = text + parts[i]
 			}
 			msg := Message{text, user, channel, timestamp}
-			userdata[user].Messages = append(userdata[user].Messages, msg)
-			msgdata = append(msgdata, msg)
+			history.userdata[user].Messages = append(history.userdata[user].Messages, msg)
+			history.data.Messages = append(history.data.Messages, msg)
 		}
 
 		if strings.HasPrefix(l, "url") {
 			url := Url{parts[3], timestamp}
-			userdata[user].Urls = append(userdata[user].Urls, url)
-			urldata = append(urldata, url)
+			history.userdata[user].Urls = append(history.userdata[user].Urls, url)
+			history.data.Urls = append(history.data.Urls, url)
 		}
 	}
 	elapsed := time.Since(time_history)
-	log.Noticef("History loaded %d events, %d urls and %d messages in %f seconds.\n", len(eventdata), len(urldata), len(msgdata), elapsed.Seconds())
+	log.Noticef("History loaded %d events, %d urls and %d messages in %f seconds.\n", len(history.data.Events), len(history.data.Urls), len(history.data.Messages), elapsed.Seconds())
 	log.Notice("Initializing IRC connection.")
 
 	// Init IRC connection
@@ -309,25 +340,19 @@ func main() {
 		})
 	c.HandleFunc(irc.JOIN,
 		func(conn *irc.Conn, line *irc.Line) {
-			log.Info("[" + line.Target() + "] " + line.Nick + " (" + line.Ident + "@" + line.Host + ") has joined.")
-			history_event(line.Nick, "join", "", line.Target())
-			if line.Nick == config.Nickname {
-				return
-			}
-			time.Sleep(100 * time.Millisecond)
+			log.Infof("[%s] %s (%s@%s) has joined.", line.Target(), line.Nick, line.Ident, line.Host)
+			history.AddEvent(line.Nick, "join", "", line.Target())
 		})
 
 	c.HandleFunc(irc.QUIT,
 		func(conn *irc.Conn, line *irc.Line) {
-			log.Info("[" + line.Target() + "] " + line.Nick + " (" + line.Ident + "@" + line.Host + ") has quit.")
-			history_event(line.Nick, "quit", line.Text(), "")
-			time.Sleep(100 * time.Millisecond)
+			log.Infof("[%s] %s (%s@%s) has quit.", line.Target(), line.Nick, line.Ident, line.Host)
+			history.AddEvent(line.Nick, "quit", line.Text(), "")
 		})
 
 	c.HandleFunc(irc.PING,
 		func(conn *irc.Conn, line *irc.Line) {
 			log.Debug("PING.")
-			time.Sleep(100 * time.Millisecond)
 		})
 
 	c.HandleFunc(irc.PRIVMSG,
@@ -346,19 +371,11 @@ func main() {
 			text = strings.Replace(text, "", "", -1)
 			text = strings.Replace(text, "", "", -1)
 
-			log.Notice("[" + line.Target() + "] " + sender + ": " + text)
+			log.Noticef("[%s] %s: %s", target, sender, text)
 
-			_, ok := userdata[sender]
-			if !ok {
-				m := []Message{}
-				e := []Event{}
-				u := []Url{}
-				userdata[sender] = &User{m, e, u}
-			}
-
-			history_message(sender, target, text)
+			history.AddMessage(sender, target, text)
 			if len(config.ReportChan) > 0 {
-				zax.Privmsg(config.ReportChan, "["+target+"] "+sender+": "+text)
+				zax.Privmsg(config.ReportChan, fmt.Sprintf("[%s] %s: %s", target, sender, text))
 			}
 
 			cmd_admin := []string{"%%", "<<"}
@@ -465,7 +482,7 @@ func main() {
 					}
 				}
 				time_seen := time.Time{}
-				data, found := userdata[seen_user]
+				data, found := history.userdata[seen_user]
 				if !found {
 					zax.Privmsg(channel, get_user_not_exists())
 					return
@@ -497,7 +514,6 @@ func main() {
 						is_event = false
 					}
 				}
-
 				if is_event {
 					if evt.Event == "quit" {
 						action = "quitting"
@@ -570,14 +586,14 @@ func main() {
 			if is_command(text, cmd_url) {
 				var url Url
 				var urls []Url
-				urls = urldata
+				urls = history.data.Urls
 
 				is_cmd_last := args[1] == "last" || args[1] == "l"
 				is_cmd_random := args[1] == "random" || args[1] == "r"
 				is_cmd_find := args[1] == "find" || args[1] == "f"
 
 				if is_cmd_last || is_cmd_random && len(args) == 3 {
-					user_urls := userdata[args[2]].Urls
+					user_urls := history.userdata[args[2]].Urls
 					if user_urls != nil {
 						urls = user_urls
 					}
@@ -612,14 +628,14 @@ func main() {
 				var msg Message
 				var msgs []Message
 
-				msgs = msgdata
+				msgs = history.data.Messages
 
 				is_cmd_last := args[1] == "last" || args[1] == "l"
 				is_cmd_random := args[1] == "random" || args[1] == "r"
 				is_cmd_find := args[1] == "find" || args[1] == "f"
 
 				if is_cmd_last || is_cmd_random && len(args) == 3 {
-					user_msgs := userdata[args[2]].Messages
+					user_msgs := history.userdata[args[2]].Messages
 					if user_msgs != nil {
 						msgs = user_msgs
 					}
@@ -684,12 +700,14 @@ func main() {
 				steam_appid := 0
 				var err error
 
+				steam_latest_url := "http://store.steampowered.com/search/?sort_by=Released_DESC&tags=-1&category1=998&page="
+
 				if subcommand == "latest" || subcommand == "l" {
-					steam_appid, success = steam.SearchSteampowered("http://store.steampowered.com/search/?sort_by=Released_DESC&tags=-1&category1=998&page=1", 0)
+					steam_appid, success = steam.SearchSteampowered(steam_latest_url+"1", 0)
 				}
 				if subcommand == "random" || subcommand == "r" {
 					page := strconv.Itoa(rand_int(1, 286))
-					steam_appid, success = steam.SearchSteampowered("http://store.steampowered.com/search/?sort_by=Released_DESC&tags=-1&category1=998&page="+page, -2)
+					steam_appid, success = steam.SearchSteampowered(steam_latest_url+page, -2)
 				}
 				if subcommand == "trending" || subcommand == "t" {
 					apps, suc := steam.GetTrending(config.UserAgent)
@@ -757,7 +775,7 @@ func main() {
 				for i := 0; i < len(urls); i++ {
 					url := urls[i]
 					log.Debugf("Found reddit url: %s", url)
-					history_url(sender, url)
+					history.AddUrl(sender, url)
 
 					if url == last_url {
 						log.Debugf("Matches same url (%s) as last time, ignore.", last_url)
