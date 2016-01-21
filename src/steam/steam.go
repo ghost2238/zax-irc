@@ -1,7 +1,7 @@
 package steam
 
 import (
-	"fmt"
+	"github.com/op/go-logging"
 	"golang.org/x/net/html"
 	"io/ioutil"
 	"math/rand"
@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 )
+
+var log = logging.MustGetLogger("steam")
 
 type Trending struct {
 	Id       int
@@ -119,20 +121,20 @@ func get_appinfo_steampowered(appid int, useragent string) (SteamApp, bool) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", "http://store.steampowered.com/app/"+s_appid+"/", nil)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return app, false
 	}
 	req.Header.Set("User-Agent", useragent)
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return app, false
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return app, false
 	}
 	s_body := string(body)
@@ -147,7 +149,7 @@ func get_appinfo_steampowered(appid int, useragent string) (SteamApp, bool) {
 		app.ReleaseDate = release[1]
 		app.ReleaseYear = date_p[2]
 	} else {
-		fmt.Println("Unable to parse release date.")
+		log.Debug("Unable to parse release date.")
 	}
 
 	name := re_name.FindStringSubmatch(s_body)
@@ -159,7 +161,7 @@ func get_appinfo_steampowered(appid int, useragent string) (SteamApp, bool) {
 	re_rating := regexp.MustCompile("(\\d+?\\.*\\d+?)% of the (\\d+,*\\d*?) user reviews for this game")
 	re_rating_m := re_rating.FindStringSubmatch(s_body)
 	if re_rating_m != nil {
-		fmt.Println(re_rating_m[0])
+		log.Debug(re_rating_m[0])
 		f_rating, _err := strconv.ParseFloat(re_rating_m[1], 32)
 		if _err == nil {
 			app.Rating = float32(f_rating)
@@ -190,12 +192,10 @@ func get_appinfo_steampowered(appid int, useragent string) (SteamApp, bool) {
 
 	dev := re_dev.FindStringSubmatch(s_body)
 	if dev != nil {
-		//fmt.Println("Found dev:" + dev[1])
 		app.Developer = html.UnescapeString(dev[1])
 	}
 	pub := re_pub.FindStringSubmatch(s_body)
 	if pub != nil {
-		//fmt.Println("Found dev:" + dev[1])
 		app.Publisher = html.UnescapeString(dev[1])
 	}
 
@@ -227,20 +227,20 @@ func get_appinfo_steamdb(appid int, useragent string) (SteamApp, bool) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", "https://steamdb.info/app/"+s_appid+"/info/", nil)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return app, false
 	}
 	req.Header.Set("User-Agent", useragent)
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return app, false
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return app, false
 	}
 	s_body := string(body)
@@ -248,7 +248,7 @@ func get_appinfo_steamdb(appid int, useragent string) (SteamApp, bool) {
 	re := regexp.MustCompile("<table class=\"table table-bordered table-hover table-dark\">(.+?)</table>")
 	match := re.FindStringSubmatch(s_body)
 	if match == nil {
-		fmt.Println("Unable to find table.")
+		log.Debug("Unable to find table.")
 		return app, false
 	} else {
 		//fmt.Println(match[1])
@@ -267,14 +267,14 @@ func get_appinfo_steamdb(appid int, useragent string) (SteamApp, bool) {
 		app.ReleaseDate = release[1]
 		app.ReleaseYear = date_p[2]
 	} else {
-		fmt.Println("Unable to parse release date.")
+		log.Debug("Unable to parse release date.")
 	}
 
 	// Parse rating
 	re_rating := regexp.MustCompile("(\\d+?\\.*\\d+?)% of the (\\d+,*\\d*?) user reviews for this game")
 	re_rating_m := re_rating.FindStringSubmatch(s_body)
 	if re_rating_m != nil {
-		fmt.Println(re_rating_m[0])
+		log.Debug(re_rating_m[0])
 		f_rating, _err := strconv.ParseFloat(re_rating_m[1], 32)
 		if _err == nil {
 			app.Rating = float32(f_rating)
@@ -284,7 +284,6 @@ func get_appinfo_steamdb(appid int, useragent string) (SteamApp, bool) {
 			app.Reviews = i_reviews
 		}
 	}
-	fmt.Println("Table cells:")
 	for i, cell := range cells {
 		content := ""
 		if i != len(cells)-1 {
@@ -329,7 +328,7 @@ func get_appinfo_steamdb(appid int, useragent string) (SteamApp, bool) {
 	app.Achievements = strings.Contains(s_body, "aria-label=\"Steam Achievements\"")
 	app.Workshop = strings.Contains(s_body, "aria-label=\"Steam Workshop\"")
 
-	fmt.Println("Done collecting info.")
+	log.Debug("Done collecting info.")
 
 	return app, true
 }
@@ -394,20 +393,20 @@ func GetTrending(useragent string) (games_result []Trending, success bool) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", "http://steamcharts.com/", nil)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return games, false
 	}
 	req.Header.Set("User-Agent", useragent)
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return games, false
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Error(err.Error())
 		return games, false
 	}
 	s_body := string(body)
@@ -417,7 +416,7 @@ func GetTrending(useragent string) (games_result []Trending, success bool) {
 	matches := re.FindAllStringSubmatch(s_body, -1)
 	if matches != nil {
 		for _, match := range matches {
-			fmt.Println(fmt.Sprintf("Found match: %s, %s, %s, %s", match[1], match[2], match[3], match[4]))
+			log.Debugf("Found match: %s, %s, %s, %s", match[1], match[2], match[3], match[4])
 			app_s := match[1]
 			name := strings.TrimSpace(match[2])
 			gain := html.UnescapeString(match[3])
@@ -437,14 +436,11 @@ func GetAppInfo(appid int, useragent string) (SteamApp, bool) {
 	app, result := get_appinfo_steampowered(appid, useragent)
 	// fallback methods
 	if app.Name == "" || !result {
+		log.Debug("Unable to find appinfo on steampowered, using steamdb as fallback.")
 		app, result = get_appinfo_steamdb(appid, useragent)
 		if app.Name == "" || !result {
 			return app, false
 		}
 	}
 	return app, true
-}
-
-func steam_test() {
-
 }

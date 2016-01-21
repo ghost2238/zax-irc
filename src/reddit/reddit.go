@@ -9,7 +9,7 @@ import (
 )
 
 func Search(url string) (string, bool) {
-	resp, err := http.Get("https://www.reddit.com/search?q=url%3A" + url + "&sort=relevance&t=all")
+	resp, err := http.Get("https://www.reddit.com/search?q=url%3A" + url + "&sort=new&t=all")
 	if err != nil {
 		return "", false
 	}

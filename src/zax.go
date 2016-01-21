@@ -64,6 +64,7 @@ type Config struct {
 	Server            string
 	ReportChan        string
 	UserAgent         string
+	ProcessUrls       bool
 	SSL               bool
 	SSLIgnoreInsecure bool
 	Channels          []ChannelCredentials
@@ -270,7 +271,6 @@ func main() {
 			parts = strings.Split(l, ",")
 			ts, _ := strconv.ParseInt(parts[1], 10, 64)
 			timestamp = time.Unix(ts, 0)
-			//log.Debugf("[%d-%02d-%02d %02d:%02d:%02d]", timestamp.Year(), timestamp.Month(), timestamp.Day(), timestamp.Hour(), timestamp.Minute(), timestamp.Second())
 			user = parts[2]
 			channel = parts[3]
 			if !history.IsUserInit(user) {
@@ -378,6 +378,8 @@ func main() {
 				zax.Privmsg(config.ReportChan, fmt.Sprintf("[%s] %s: %s", target, sender, text))
 			}
 
+			args := strings.Split(text, " ")
+
 			cmd_admin := []string{"%%", "<<"}
 
 			// Check if admin
@@ -405,6 +407,22 @@ func main() {
 				if text == "<<" {
 					zax.Quit(get_quit_msg())
 				}
+				if strings.HasPrefix(text, "%%") {
+					if len(args) == 4 {
+						if args[1] == "opt" {
+							if args[2] == "process_urls" {
+								if args[3] == "on" {
+									config.ProcessUrls = true
+								}
+								if args[3] == "off" {
+									config.ProcessUrls = false
+								}
+							}
+						}
+					}
+
+				}
+
 			}
 
 			cmd_rand := []string{".r", ".random"}
@@ -415,7 +433,6 @@ func main() {
 			cmd_seen := []string{"!"}
 			cmd_help := []string{"?h"}
 
-			args := strings.Split(text, " ")
 			if is_command(text, cmd_help) {
 				reply_msg := ""
 				if text == "?h" {
@@ -771,7 +788,7 @@ func main() {
 				}
 			}
 			// Handle URLs
-			if !(sender == "Wipe" && (strings.Contains(text, "Steam") || strings.Contains(text, "YouTube"))) {
+			if !(sender == "Wipe" && (strings.Contains(text, "Steam") || strings.Contains(text, "YouTube"))) && config.ProcessUrls {
 				log.Debug("Looking for URLs...")
 				urls := xurls.Relaxed.FindAllString(text, -1)
 				for i := 0; i < len(urls); i++ {

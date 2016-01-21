@@ -17,7 +17,7 @@ func mobygames_search(url string, result_needed string, useragent string) (page 
 		fmt.Println(err.Error())
 		return "", false
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64; rv:43.0) Gecko/20100101 Firefox/43.0")
+	req.Header.Set("User-Agent", useragent)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println(err.Error())
@@ -129,15 +129,12 @@ func FindGames(query string, useragent string) (found_games []GameResult, found 
 	fmt.Println("author:" + author)
 	fmt.Println("role:" + role)
 
-	//return nil, false
-
 	if author == "" {
 		return nil, false
 	}
 	url_author := strings.Replace(author, " ", "+", -1)
 	url, found := mobygames_search("https://www.mobygames.com/search/quick?q="+url_author+"&p=-1&search=Go&sFilter=1&sD=on", "Developer", useragent)
-	//url, found := mobygames_search("https://www.mobygames.com/", "Developer", useragent)
-	//url := "https://www.mobygames.com/developer/sheet/view/developerId,682/"
+
 	if !found {
 		fmt.Println("Unable to find URL.")
 		return nil, false
