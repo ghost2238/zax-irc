@@ -358,7 +358,7 @@ func main() {
 	c.HandleFunc(irc.PRIVMSG,
 		func(conn *irc.Conn, line *irc.Line) {
 			sender_host := line.Host
-			sender := line.Src
+			sender := line.Nick
 			text := line.Text()
 			channel := line.Target()
 			target := line.Target()
@@ -421,29 +421,31 @@ func main() {
 				if text == "?h" {
 					reply_msg = "Cmds: [[.g(ame) .r(andom) .s(team) .u(rl) .m(sg) !]] -- Type ?h <cmd> for more info."
 				}
-				if args[1] == "!" {
-					reply_msg = "Checks when user was last seen. Syntax: !<username>"
-				}
-				if is_command(args[1], cmd_rand) {
-					reply_msg = "Generate random number. Syntax: .random <min> <max>"
-				}
-				if is_command(args[1], cmd_steam) {
-					if len(args) == 3 {
-						if args[2] == "symbols" {
-							reply_msg = "MP=MultiPlayer, SP=SinglePlayer, CO=Co-op VAC=Valve Anti-Cheat, TC=Trading Card, Ach=Achievments, EA=Early Access, WS=Workshop support"
-						}
-					} else {
-						reply_msg = "Search steam. For result symbols type '?h .s symbols' Syntax: .steam [ find | latest | random | trending | appid] <expression>"
+				if len(args) > 1 {
+					if args[1] == "!" {
+						reply_msg = "Checks when user was last seen. Syntax: !<username>"
 					}
-				}
-				if is_command(args[1], cmd_game) {
-					reply_msg = "Search for game info. Syntax: .game <query>"
-				}
-				if is_command(args[1], cmd_msg) {
-					reply_msg = "Search message log. Syntax: .msg [ find | latest | random ] <expression>"
-				}
-				if is_command(args[1], cmd_url) {
-					reply_msg = "Search URL log. Syntax: .url [ find | latest | random ] <expression>"
+					if is_command(args[1], cmd_rand) {
+						reply_msg = "Generate random number. Syntax: .random <min> <max>"
+					}
+					if is_command(args[1], cmd_steam) {
+						if len(args) == 3 {
+							if args[2] == "symbols" {
+								reply_msg = "MP=MultiPlayer, SP=SinglePlayer, CO=Co-op VAC=Valve Anti-Cheat, TC=Trading Card, Ach=Achievments, EA=Early Access, WS=Workshop support"
+							}
+						} else {
+							reply_msg = "Search steam. For result symbols type '?h .s symbols' Syntax: .steam [ find | latest | random | trending | appid] <expression>"
+						}
+					}
+					if is_command(args[1], cmd_game) {
+						reply_msg = "Search for game info. Syntax: .game <query>"
+					}
+					if is_command(args[1], cmd_msg) {
+						reply_msg = "Search message log. Syntax: .msg [ find | latest | random ] <expression>"
+					}
+					if is_command(args[1], cmd_url) {
+						reply_msg = "Search URL log. Syntax: .url [ find | latest | random ] <expression>"
+					}
 				}
 				zax.Privmsg(reply_to, reply_msg)
 				return
@@ -539,7 +541,7 @@ func main() {
 					hours = int(duration.Hours()) % 24
 					min = 0
 				} else if duration.Minutes() > 60 {
-					hours = int(duration.Hours()) / 60
+					hours = int(duration.Hours())
 					min = int(duration.Minutes()) % 60
 				} else if duration.Seconds() > 60 {
 					min = int(duration.Minutes())
@@ -642,7 +644,7 @@ func main() {
 				}
 
 				if is_cmd_last {
-					msg = msgs[len(msgs)-2]
+					msg = msgs[len(msgs)-1]
 				}
 				if is_cmd_random {
 					msg = msgs[rand_int(0, len(msgs)-1)]
